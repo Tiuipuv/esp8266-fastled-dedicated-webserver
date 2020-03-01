@@ -298,7 +298,8 @@ function addColorFieldPicker(field, formId) {
 
   let id = "input-" + field.name;
 
-  let input = template.find(".minicolors");
+  let input = template.find("#colorTemplateInner");
+  input.addClass('minicolors');
   input.attr("id", id);
 
   if(!field.value.startsWith("rgb("))
@@ -403,7 +404,8 @@ function addColorFieldPicker(field, formId) {
 
   input.on("change", function() {
     if (ignoreColorChange) return;
-
+    
+    let value = $(this).val();
     let components = rgbToComponents(value);
 
     redInput.val(components.r);
