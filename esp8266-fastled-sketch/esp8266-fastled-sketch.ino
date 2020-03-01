@@ -37,6 +37,7 @@
 #include <WiFiUdp.h>
 #include <ESP8266WiFiMulti.h>
 #include <ESP8266WebServer.h>
+#include <ArduinoOTA.h>
 #include <WebSocketsServer.h>
 #include <ArduinoJson.h>  //v6.8 beta works
 #include "GradientPalettes.h"
@@ -65,7 +66,7 @@ CRGBPalette16 IceColors_p = CRGBPalette16(CRGB::Black, CRGB::Blue, CRGB::Aqua, C
 
 const uint8_t apCount = ARRAY_SIZE(wifiAPs);
 const uint8_t zoneCount = ARRAY_SIZE(zones);
-uint8_t brightness = 64;
+uint8_t brightness = 128;
 uint8_t power = 1;
 uint8_t secondsPerPalette = 10;
 uint8_t gCurrentPaletteNumber = 0;
@@ -76,8 +77,11 @@ uint8_t autoplayDuration = 10;
 uint8_t audioGain = 0;
 unsigned long autoPlayTimeout = 0;
 unsigned long gHue = 0;
+unsigned long strobeTimer = 0;
+bool strobe = false;
 
 #define AUDIO_DROP_RATE 20
+double previousLowFreq = 0;
 double lowFreq = 0;
 double low40Freq = 0;
 double low80Freq = 0;
@@ -149,6 +153,7 @@ PatternAndNameList patterns = {
   { showSolidColor,         "Solid Color" , {2}},
   
   { audioSolidColor,        "(Audio) Solid Color", {2, 13}},
+  { audioSolidColor2,       "(Audio) Solid Color 2", {13}},
   { audioRainbowEdge,       "(Audio) Rainbow Edge", {13}},
   { audioFadeEdge,          "(Audio) Fade Edge", {13}},
   { audioFadeRedEdge,       "(Audio) Red Edge", {13}},
@@ -160,7 +165,13 @@ PatternAndNameList patterns = {
   { audioRainbowSpeed,      "(Audio) Rainbow Speed", {13}},
   { audioRainbowSpeedLong,  "(Audio) Rainbow Speed Long", {13}},
   { audioConfetti,          "(Audio) Confetti", {4, 13}},
-  { audioConfettiDense,     "(Audio) Confetti Dense", {13}}
+  { audioConfettiDense,     "(Audio) Confetti Dense", {13}},
+  { audioSlinki,            "(Audio) Slinki", {1, 10, 13}},
+  { audioSlinki2,           "(Audio) Slinki 2", {1, 10, 13}},
+  { audioMultiEq,           "(Audio) Multi EQ", {10, 13}},
+  { audioMultiEq2,          "(Audio) Multi EQ Mirror", {10, 13}},
+  { audioMultiEqWTwinkle,   "(Audio) Multi EQ w Twinkle", {10, 13}},
+  { audioStrobe,            "(Audio) Strobe", {13}},
 };
 const uint8_t patternCount = ARRAY_SIZE(patterns);
 
@@ -186,7 +197,6 @@ void setup() {
 
   //https://github.com/FastLED/FastLED/issues/367
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
-  //Serial.printf("Connecting to %s\n", wifiAPs[1].name);
 
   int count = 2;
   Serial.print("Current AP List: ");
@@ -216,7 +226,43 @@ void setup() {
   Serial.print(WiFi.SSID());
   Serial.print(", ip ");
   Serial.println(WiFi.localIP());
+  
+  ArduinoOTA.setHostname(("esp-" + espLocation).c_str());
+  ArduinoOTA.setPassword("admin");
+  ArduinoOTA.onStart([]() {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH) {
+      type = "sketch";
+    } else { // U_FS
+      type = "filesystem";
+    }
 
+    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
+    Serial.println("Start updating " + type);
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    //Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    //fill_solid(leds, (progress / (double)total) * NUM_LEDS, CRGB::Red);
+    //FastLED.show();
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) {
+      Serial.println("Auth Failed");
+    } else if (error == OTA_BEGIN_ERROR) {
+      Serial.println("Begin Failed");
+    } else if (error == OTA_CONNECT_ERROR) {
+      Serial.println("Connect Failed");
+    } else if (error == OTA_RECEIVE_ERROR) {
+      Serial.println("Receive Failed");
+    } else if (error == OTA_END_ERROR) {
+      Serial.println("End Failed");
+    }
+  });
+  ArduinoOTA.begin();
   webServer.on("/all", HTTP_GET, []() {
     String json = getFieldsJson(fields, fieldCount);
     webServer.sendHeader("Access-Control-Allow-Origin", "*");
@@ -278,26 +324,26 @@ void setup() {
   Udp.stop();
 
   autoPlayTimeout = millis() + (autoplayDuration * 1000);
+  setPattern(String(currentPatternIndex));
 }
 
 void loop() {
   // Add entropy to random number generator; we use a lot of it.
   random16_add_entropy(random(65535));
 
+  ArduinoOTA.handle();
   webSocketsServer.loop();
   webServer.handleClient();
   int packetSize = Udp.parsePacket();
   if (packetSize) {
     // read the packet into packetBufffer
     Udp.read(packetBuffer, UDP_TX_PACKET_MAX_SIZE);
-    //Serial.println(String(packetBuffer)); //always print out before, deserialize destroys
     DeserializationError error = deserializeJson(doc, packetBuffer);
     if (error) {
       Serial.print("Error: Bad parse: ");
       Serial.println(error.c_str());
     }
     else {
-      
       int temp = doc["low40hz"];
       temp *= (audioGain / 255.0);
       if (temp > low40Freq - AUDIO_DROP_RATE) low40Freq = temp;
@@ -328,11 +374,12 @@ void loop() {
       if (temp > highFreq - AUDIO_DROP_RATE) highFreq = temp;
       else highFreq -= AUDIO_DROP_RATE;
       
-      int previousLow = lowFreq;
+      previousLowFreq = lowFreq;
       lowFreq = low40Freq + low80Freq + low120Freq + low160Freq / 4;
-      if (lowFreq - previousLow > 30) shift1 += (lowFreq - previousLow - 30) / 3; //set the shift higher on large bass hits
+      if (lowFreq - previousLowFreq > 30) shift1 += (lowFreq - previousLowFreq - 30) / 3; //set the shift higher on large bass hits
       
-      constrainDouble(lowFreq, 0, NUM_LEDS / 2);
+      //constrainDouble(lowFreq, 0, NUM_LEDS / 2);  //legacy
+      constrainDouble(lowFreq, 0, 255);
       constrainDouble(low40Freq, 0, 255);
       constrainDouble(low80Freq, 0, 255);
       constrainDouble(low120Freq, 0, 255);
@@ -340,6 +387,7 @@ void loop() {
       constrainDouble(midFreq, 0, 255);
       constrainDouble(highFreq, 0, 255);
     }
+  
   }
   if (power == 0) {
     fill_solid(leds, NUM_LEDS, CRGB::Black);
@@ -354,6 +402,12 @@ void loop() {
   EVERY_N_SECONDS( secondsPerPalette ) {
     gCurrentPaletteNumber = addmod8( gCurrentPaletteNumber, 1, gGradientPaletteCount);
     gTargetPalette = gGradientPalettes[ gCurrentPaletteNumber ];
+  }
+
+  EVERY_N_MILLISECONDS(10) {
+    // slowly blend the current palette to the next
+    //nblendPaletteTowardPalette( gCurrentPalette, gTargetPalette, 8);
+    strobeTimer++;  // slowly cycle the "base color" through the rainbow
   }
 
   EVERY_N_MILLISECONDS(40) {
@@ -427,6 +481,17 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 }
 
 //helpers
+int eqBar(int startpos, int endpos, bool polarity = 0) {
+  int diff = endpos - startpos;
+  if (polarity) {
+    return endpos - int(lowFreq / 255.0 * diff);
+  }
+  return startpos + int(lowFreq / 255.0 * diff);
+}
+int partitionEq(int partitionCount) {
+  return NUM_LEDS / partitionCount;
+}
+
 void adjustPattern(bool up) {
   if (up) {
     setPattern(String(++currentPatternIndex));
@@ -445,12 +510,20 @@ void constrainDouble(double &value, int lowerBound, int upperBound) {
     value = lowerBound;
   }
 }
+void constrainInt(int &value, int lowerBound, int upperBound) {
+  if (value > upperBound) {
+    value = upperBound;
+  }
+  else if (value < lowerBound) {
+    value = lowerBound;
+  }
+}
 int mod(int a, int b) {
     int c = a % b;
     return c >= 0 ? c : c + b;
   }
-//patterns
 
+//patterns
 void showSolidColor() {
   fill_solid(leds, NUM_LEDS, solidColor);
 }
@@ -470,7 +543,6 @@ void confetti() {
   // random colored speckles that blink in and fade smoothly
   fadeToBlackBy( leds, NUM_LEDS, (paramInt2/10.0));
   int pos = random16(NUM_LEDS);
-  // leds[pos] += CHSV( gHue + random8(64), 200, 255);
   leds[pos] += ColorFromPalette(palettes[currentPaletteIndex], gHue + random8(64));
 }
 void sinelon() {
@@ -675,13 +747,11 @@ void colorwaves( CRGB* ledarray, uint16_t numleds, CRGBPalette16& palette) {// C
     nblend( ledarray[pixelnumber], newcolor, 128);
   }
 }
-
 void slinki() {
   int len = paramInt4;
   static double position = 0;
-  position += ((double)paramInt1 / 200.0);
+  position += ((double)paramInt1 / 150.0);
   if (position > (len * 2)) position = 0;
-  Serial.println(position);
   for ( int i = 0; i < NUM_LEDS; i++) {
     //beat16 is a FastLED 3.1 function
     if (mod(((int)position - i + (len * 2)), (len * 2)) < len) {
@@ -692,56 +762,52 @@ void slinki() {
     }
   }
 }
+
 //audio anims
 
 void audioSolidColor() {
   CRGB newColor = solidColor;
-  //Serial.println(newColor.r);
-  //Serial.println(lowFreq);
   newColor.r *= (lowFreq / 255.0);
   newColor.g *= (lowFreq / 255.0);
   newColor.b *= (lowFreq / 255.0);
-  //Serial.println(newColor.r);
   fill_solid(leds, NUM_LEDS, newColor);
 }
-
+void audioSolidColor2() {
+  static double audioDelta = 0;
+  audioDelta += abs(lowFreq - previousLowFreq) / 10.0;
+  CRGB newColor = CHSV(audioDelta, 255, lowFreq);
+  fill_solid(leds, NUM_LEDS, newColor);
+}
 void audioRainbowEdge() {
   //update background of both
   for (int dot = 0; dot < NUM_LEDS; dot++) {
     leds[dot] = CHSV(lowFreq * 2, 200, 35);
-    //leds2[dot] = CHSV((lowFreq * 2) + 128, 200, 35);
   }
   //update near (left) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[dot - 1] = CHSV((dot * 4), 255, 255);
-    //leds2[dot - 1] = CHSV((dot*2.3) + (gHue)+128, 255, 255);
   }
   //update far (right) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[NUM_LEDS - dot] = CHSV((dot * 4), 255, 255);
-    //leds2[NUM_LEDS - dot] = CHSV((dot)+(gHue)+128, 255, 255);
   }
 }
 void audioFadeEdge() {
   //fade effect
   fadeToBlackBy(leds, NUM_LEDS, 30);
-  //fadeToBlackBy(leds2, NUM_LEDS, 30);
 
   //update near (left) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[dot - 1] = CHSV(shift1, 255, 255);
-    //leds2[dot - 1] = CHSV(shift1 + 127, 255, 255);
   }
   //update far (right) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[NUM_LEDS - dot] = CHSV(shift1 + 63, 255, 255);
-    //leds2[NUM_LEDS - dot] = CHSV(shift1 + 191, 255, 255);
   }
 }
 void audioFadeRedEdge() {
   //fade effect
   fadeToBlackBy(leds, NUM_LEDS, 30);
-  //fadeToBlackBy(leds2, NUM_LEDS, 30);
 
   if (shift1 > 0) {
     shift1 /= 1.1;
@@ -752,30 +818,24 @@ void audioFadeRedEdge() {
   //update near (left) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[dot - 1] = CRGB(255, shift1 * 2, shift1 * 2);
-    //leds2[NUM_LEDS / 2 - (dot - 1)] = CRGB(255, shift1, shift1);
   }
   //update far (right) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[NUM_LEDS - dot] = CRGB(255, shift1 * 2, shift1 * 2);
-    //leds2[NUM_LEDS / 2 + dot] = CRGB(255, shift1, shift1);
   }
 }
 void audioRedWhiteEdge() {
   //fade effect
   fadeToBlackBy(leds, NUM_LEDS, 30);
-  //fadeToBlackBy(leds2, NUM_LEDS, 30);
  
   fill_solid(leds, NUM_LEDS, CRGB(165, 0, 0));
-  //fill_solid(leds2, NUM_LEDS, CRGB(165, 0, 0));
   //update near (left) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[dot - 1] = CRGB(255, 255, 255);
-    //leds2[NUM_LEDS / 2 - (dot - 1)] = CRGB(255, 255, 255);
   }
   //update far (right) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[NUM_LEDS - dot] = CRGB(255, 255, 255);
-    //leds2[NUM_LEDS / 2 + dot] = CRGB(255, 255, 255);
   }
 }
 
@@ -783,39 +843,32 @@ void audioRainbowMid() {
   //update all led background
   for (int dot = 0; dot < NUM_LEDS; dot++) {
     leds[dot] = CHSV(lowFreq * 2, 200, 35);
-    //leds2[dot] = CHSV((lowFreq * 2) + 128, 200, 35);
   }
   //update near (left) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[NUM_LEDS / 2 - (dot - 1)] = CHSV((dot * 4), 255, 255);
-    //leds2[NUM_LEDS / 2 - (dot - 1)] = CHSV((dot*2.3) + (gHue)+128, 255, 255);
   }
   //update far (right) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[NUM_LEDS / 2 + dot] = CHSV((dot * 4), 255, 255);
-    //leds2[NUM_LEDS / 2 + dot] = CHSV((dot)+(gHue)+128, 255, 255);
   }
 }
 void audioFadeMid() {
   //fade effect
   fadeToBlackBy(leds, NUM_LEDS, 30);
-  //fadeToBlackBy(leds2, NUM_LEDS, 30);
 
   //update near (left) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[NUM_LEDS / 2 - (dot - 1)] = CHSV(shift1, 255, 255);
-    //leds2[NUM_LEDS / 2 - (dot - 1)] = CHSV(shift1 + 127, 255, 255);
   }
   //update far (right) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[NUM_LEDS / 2 + dot] = CHSV(shift1 + 63, 255, 255);
-    //leds2[NUM_LEDS / 2 + dot] = CHSV(shift1 + 191, 255, 255);
   }
 }
 void audioFadeRedMid() {
   //fade effect
   fadeToBlackBy(leds, NUM_LEDS, 30);
-  //fadeToBlackBy(leds2, NUM_LEDS, 30);
 
   if (shift1 > 0) {
     shift1 /= 1.1;
@@ -826,30 +879,24 @@ void audioFadeRedMid() {
   //update near (left) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[NUM_LEDS / 2 - (dot - 1)] = CRGB(255, shift1 * 2, shift1 * 2);
-    //leds2[NUM_LEDS / 2 - (dot - 1)] = CRGB(255, shift1, shift1);
   }
   //update far (right) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[NUM_LEDS / 2 + dot] = CRGB(255, shift1 * 2, shift1 * 2);
-    //leds2[NUM_LEDS / 2 + dot] = CRGB(255, shift1, shift1);
   }
 }
 void audioRedWhiteMid() {
   //fade effect
   fadeToBlackBy(leds, NUM_LEDS, 30);
-  //fadeToBlackBy(leds2, NUM_LEDS, 30);
 
   fill_solid(leds, NUM_LEDS, CRGB(165, 0, 0));
-  //fill_solid(leds2, NUM_LEDS, CRGB(165, 0, 0));
   //update near (left) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[NUM_LEDS / 2 - (dot - 1)] = CRGB(255, 255, 255);
-    //leds2[NUM_LEDS / 2 - (dot - 1)] = CRGB(255, 255, 255);
   }
   //update far (right) side
   for (int dot = 1; dot < lowFreq; dot++) {
     leds[NUM_LEDS / 2 + dot] = CRGB(255, 255, 255);
-    //leds2[NUM_LEDS / 2 + dot] = CRGB(255, 255, 255);
   }
 }
 
@@ -876,4 +923,121 @@ void audioConfettiDense() {
   leds[pos] += CHSV(gHue * 2 + random8(64), 200, 255);
   pos = random16(NUM_LEDS);
   leds[pos] += CHSV(gHue * 2 + random8(64), 200, 255);
+}
+
+void audioSlinki() {
+  int len = paramInt4;
+  static double position = 0;
+  static double audioDelta = 0;
+  audioDelta += abs(lowFreq - previousLowFreq) / 10.0;
+  position += ((double)paramInt1 / 150.0);
+  if (position > (len * 2)) position = 0;
+  constrainDouble(lowFreq, 0, 255);
+  for ( int i = 0; i < NUM_LEDS; i++) {
+    //beat16 is a FastLED 3.1 function
+    if (mod(((int)position - i + (len * 2)), (len * 2)) < len) {
+      leds[i] = CHSV(audioDelta, 255, lowFreq);
+    }
+    else {
+      leds[i] = CRGB(0, 0, 0);
+    }
+  }
+}
+
+void audioSlinki2() {
+  int len = paramInt4;
+  static double position = 0;
+  static double audioDelta = 0;
+  audioDelta += abs(lowFreq - previousLowFreq) / 10.0;
+  position += ((double)paramInt1 / 150.0);
+  if (position > (len * 2)) position = 0;
+  constrainDouble(lowFreq, 0, 255);
+  for ( int i = 0; i < NUM_LEDS; i++) {
+    //beat16 is a FastLED 3.1 function
+    if (mod(((int)position - i + (len * 2)), (len * 2)) < len) {
+      leds[i] = CHSV(audioDelta, 255, lowFreq);
+    }
+    else {
+      leds[i] = CHSV(audioDelta + 128, 255, 255 - lowFreq);
+    }
+  }
+}
+
+void audioMultiEq() {
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  
+  int partitionCount = (paramInt4 / 5) + 1;
+  
+  for (int i = 0; i < partitionCount; i++) {
+    int eqStart = i * NUM_LEDS / partitionCount;
+    int eqEnd = (i + 1) * NUM_LEDS / partitionCount - 1;
+    if (eqEnd > NUM_LEDS) eqEnd = NUM_LEDS;
+    int eqMusicPoint = eqBar(eqStart, eqEnd);
+    
+    for (int j = eqStart; j < eqMusicPoint; j++) {
+      leds[j] = CRGB(0, 0, 255);
+    }
+  }
+}
+
+void audioMultiEq2() {
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  int partitionCount = (paramInt4 / 5) + 1;
+  int eqSize = partitionEq(partitionCount);
+  
+  for (int i = 0; i < partitionCount; i++) {
+    int eqStart = i * eqSize;
+    int eqEnd = (i + 1) * eqSize - 1;
+    bool polarity = i % 2;
+    if (eqEnd > NUM_LEDS) eqEnd = NUM_LEDS;
+    int eqMusicPoint = eqBar(eqStart, eqEnd, polarity);
+    
+    if (polarity) {
+      for (int j = eqMusicPoint + 1; j <= eqEnd; j++) {
+        leds[j] = CRGB(255, 0, 0);
+      }
+    }
+    else {
+      for (int j = eqStart; j < eqMusicPoint; j++) {
+        leds[j] = CRGB(255, 0, 0);
+      }
+    }
+  }
+}
+
+void audioMultiEqWTwinkle() {
+  audioConfettiDense();
+  
+  int partitionCount = (paramInt4 / 5) + 1;
+  int eqSize = partitionEq(partitionCount);
+  
+  for (int i = 0; i < partitionCount; i++) {
+    int eqStart = i * eqSize;
+    int eqEnd = (i + 1) * eqSize - 1;
+    if (eqEnd > NUM_LEDS) eqEnd = NUM_LEDS;
+    int eqMusicPoint = eqBar(eqStart, eqEnd);
+    
+    for (int j = eqStart; j < eqMusicPoint; j++) {
+      leds[j] = CRGB(255, 0, 0);
+    }
+  }
+}
+
+void audioStrobe() {
+  if (strobeTimer > 1 && strobe) {
+    strobeTimer = 0;
+    strobe = false;
+  }
+  else if (strobeTimer > 8 && !strobe) {
+    strobeTimer = 0;
+    strobe = true;
+  }
+  int lowFreqMod = (lowFreq - 40) * 1.5;
+  constrainInt(lowFreqMod, 0, 255);
+  if (strobe) {
+    fill_solid(leds, NUM_LEDS, CRGB(lowFreqMod, lowFreqMod, lowFreqMod));
+  }
+  else {
+    fill_solid(leds, NUM_LEDS, CRGB::Black);
+  }
 }
