@@ -10,6 +10,7 @@ let ignoreColorChange = false;
 let paramsUpdateRunning = false;
 
 let ws = new ReconnectingWebSocket('ws://' + address + ':81/', ['arduino']);
+//should look into changing
 ws.close();
 ws.debug = true;
 
@@ -403,7 +404,6 @@ function addColorFieldPicker(field, formId) {
   input.on("change", function() {
     if (ignoreColorChange) return;
 
-    let value = $(this).val();
     let components = rgbToComponents(value);
 
     redInput.val(components.r);
@@ -487,7 +487,7 @@ function updateFieldValue(name, value) {
     select.val(value);
   } else if (type == "Color") {
     let input = group.find(".form-control");
-    input.val("rgb(" + value + ")");
+    //input.val("rgb(" + value + ")");
   }
 };
 
