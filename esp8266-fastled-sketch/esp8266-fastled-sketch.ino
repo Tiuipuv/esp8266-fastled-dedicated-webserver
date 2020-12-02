@@ -28,7 +28,7 @@
 
 //1 living, 2 kitchen, 3 pong, 4 foosball room, 5 party room, 6 stairs, 7 lighthouse, 20 calibration, 21 dads basement
 //253       252        251     250              249           248       247           240             253
-#define CURRENT_ROOM 1
+#define CURRENT_ROOM 21
 
 #include <FastLED.h>
 #define DATA_PIN      2
@@ -148,7 +148,7 @@ PatternAndNameList patterns = {
   { juggle,                 "Juggle", {} },
   { fire,                   "Fire", {3, 4} },
   { water,                  "Water", {3, 4} },
-  { slinki,                 "Slinki", {1, 10} },
+  { slinki,                 "Slinki", {2, 1, 10} },
 
   { showSolidColor,         "Solid Color" , {2}},
   
@@ -168,9 +168,9 @@ PatternAndNameList patterns = {
   { audioConfettiDense,     "(Audio) Confetti Dense", {13}},
   { audioSlinki,            "(Audio) Slinki", {1, 10, 13}},
   { audioSlinki2,           "(Audio) Slinki 2", {1, 10, 13}},
-  { audioMultiEq,           "(Audio) Multi EQ", {10, 13}},
-  { audioMultiEq2,          "(Audio) Multi EQ Mirror", {10, 13}},
-  { audioMultiEqWTwinkle,   "(Audio) Multi EQ w Twinkle", {10, 13}},
+  { audioMultiEq,           "(Audio) Multi EQ", {2, 10, 13}},
+  { audioMultiEq2,          "(Audio) Multi EQ Mirror", {2, 10, 13}},
+  { audioMultiEqWTwinkle,   "(Audio) Multi EQ w Twinkle", {2, 10, 13}},
   { audioStrobe,            "(Audio) Strobe", {13}},
 };
 const uint8_t patternCount = ARRAY_SIZE(patterns);
@@ -755,7 +755,7 @@ void slinki() {
   for ( int i = 0; i < NUM_LEDS; i++) {
     //beat16 is a FastLED 3.1 function
     if (mod(((int)position - i + (len * 2)), (len * 2)) < len) {
-      leds[i] = CRGB(255, 0, 0);
+      leds[i] = solidColor;
     }
     else {
       leds[i] = CRGB(0, 0, 0);
@@ -975,7 +975,7 @@ void audioMultiEq() {
     int eqMusicPoint = eqBar(eqStart, eqEnd);
     
     for (int j = eqStart; j < eqMusicPoint; j++) {
-      leds[j] = CRGB(0, 0, 255);
+      leds[j] = solidColor;
     }
   }
 }
@@ -994,12 +994,12 @@ void audioMultiEq2() {
     
     if (polarity) {
       for (int j = eqMusicPoint + 1; j <= eqEnd; j++) {
-        leds[j] = CRGB(255, 0, 0);
+        leds[j] = solidColor;
       }
     }
     else {
       for (int j = eqStart; j < eqMusicPoint; j++) {
-        leds[j] = CRGB(255, 0, 0);
+        leds[j] = solidColor;
       }
     }
   }
@@ -1018,7 +1018,7 @@ void audioMultiEqWTwinkle() {
     int eqMusicPoint = eqBar(eqStart, eqEnd);
     
     for (int j = eqStart; j < eqMusicPoint; j++) {
-      leds[j] = CRGB(255, 0, 0);
+      leds[j] = solidColor;
     }
   }
 }
